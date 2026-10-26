@@ -1,0 +1,525 @@
+================================================================================
+EVENT REQUIREMENT PORTAL - FULL ARCHITECTURAL & IMPLEMENTATION SPECIFICATION
+================================================================================
+
+TABLE OF CONTENTS
+1. Project Overview & Understanding
+2. Implementation Approach & Core Philosophy
+3. Key Decisions and Assumptions
+4. End-to-End Application Workflow
+5. Key Frontend Implementation
+6. Key Backend Implementation
+7. API Specifications (Request, Response & Status Codes)
+8. MongoDB Schema Design & Data Flow
+9. Testing Strategy & Edge Cases Handled
+10. Limitations & Planned Improvements
+11. File-by-File Breakdown: Purpose & Need of Every File in the Project
+
+================================================================================
+1. PROJECT OVERVIEW & UNDERSTANDING
+================================================================================
+The Event Requirement Portal is an end-to-end web application built for event
+producers and organizers to define, validate, categorize, and publish operational
+requirements for event talent.
+
+In professional event management, staffing and technical requirements vary
+drastically depending on the role required:
+- EVENT PLANNERS need project coordination scopes (full, partial, day-of),
+  estimated guest capacities, design themes, and milestones like permits and
+  master run-of-show schedules.
+- PERFORMERS & ARTISTS need stage dimensions, performance durations, musical
+  genres, sound equipment logistics (venue-provided vs. performer-provided),
+  and audio/lighting technical riders.
+- TECHNICAL CREW need specific crew rosters (sound engineers, lighting ops,
+  camera riggers), shift call times, hourly budgets, safety certifications
+  (OSHA, Dante, Rigging), and hardware proficiency.
+
+A generic single-form input cannot capture these disparate domain requirements
+without introducing confusing fields or excessive clutter. This project solves
+that challenge by implementing a dynamic, multi-step wizard with category-driven
+branching, backed by an Express REST API and a MongoDB document store.
+
+================================================================================
+2. IMPLEMENTATION APPROACH & CORE PHILOSOPHY
+================================================================================
+The application is architected around three foundational principles:
+
+A. Progressive Disclosure:
+   Instead of overwhelming the user with dozens of inputs, the flow is broken
+   into 4 logical stages:
+   - Step 1: Event Basics (Common meta parameters + category selection).
+   - Step 2: Role Details (Category-specific primary fields).
+   - Step 3: Technical Specifications & Deliverables (Category-specific specs).
+   - Step 4: Comprehensive Review & Finalization (Unified verification before write).
+
+B. Dynamic Branching with State Preservation:
+   The user selects one of three distinct categories (Planner, Performer, Crew)
+   in Step 1. Steps 2 and 3 dynamically re-render form controls to collect only
+   the data pertinent to that selection. State for other categories is safely
+   managed so users can switch categories during draft mode without crashing.
+
+C. Strict Data Integrity & Verification:
+   Validation occurs both client-side (instant field-level feedback before step
+   advancement) and server-side (schema validation and sanitizer guards in
+   Express/Mongoose to reject malformed payloads).
+
+================================================================================
+3. KEY DECISIONS AND ASSUMPTIONS
+================================================================================
+1. Single Unified MongoDB Collection vs. Separate Collections:
+   DECISION: All requirements are stored in a single `requirements` collection
+   with embedded sub-documents (`plannerDetails`, `performerDetails`,
+   `crewDetails`).
+   RATIONALE: Allows unified indexing, centralized dashboard querying, cross-
+   category statistics, and single-query fetches, while Mongoose conditional
+   validators enforce that only the active category's sub-schema is populated.
+
+2. Human-Readable Tracking References:
+   DECISION: In addition to MongoDB's internal `_id`, each document generates a
+   clean reference code (e.g., `PLA-20261026-X8K1A`, `CRE-20261026-M4P9B`).
+   RATIONALE: Professional event workflows require codes easily communicated
+   over email, contracts, and phone support. The API natively supports lookup
+   by either `_id` or `referenceId`.
+
+3. Client-Side Step Progression Model:
+   DECISION: Step navigation is linear forward (requiring valid input to unlock
+   the next step) but non-linear backwards (users can freely jump back to any
+   unlocked step to edit prior answers without losing their draft progress).
+
+4. Real-Time Inspection Drawer:
+   DECISION: Built an embedded side-drawer (`RequirementsDrawer`) directly into
+   the portal.
+   RATIONALE: Allows organizers to immediately verify that their submission was
+   persisted in MongoDB without needing external database tools like Compass.
+
+================================================================================
+4. END-TO-END APPLICATION WORKFLOW
+================================================================================
+The user flow operates as follows:
+
+  [Step 1: Basics] ──► Select Category (Planner / Performer / Crew)
+          │
+          ▼
+  [Step 2: Role] ────► Tailored Primary Inputs
+          │
+          ▼
+  [Step 3: Tech] ────► Deep Technical Specs & Deliverables
+          │
+          ▼
+  [Step 4: Review] ──► Visual Summary Breakdown & Edit Jump Links
+          │
+          ▼
+  [Publish Click] ───► POST /api/requirements (Fetch API)
+          │
+          ▼
+  [Express API] ─────► Validation & Sanitization
+          │
+          ▼
+  [MongoDB Save] ────► Pre-save Reference ID Hook -> BSON Write
+          │
+          ▼
+  [Success View] ────► Tracking Code Card & Live Requirements Board
+
+Detailed Step Walkthrough:
+- STEP 1 (Basics):
+  User enters Event Name, Event Type (Corporate, Wedding, Concert, Gala, etc.),
+  selects Date Mode (Single Day or Date Range with start/end date pickers),
+  City/Location, and Venue name. The user then clicks one of 3 interactive
+  category cards: Event Planner, Performer / Artist, or Technical Crew.
+- STEP 2 (Core Parameters):
+  - If Planner: Scope (Full, Partial, Day-Of), Guest Count, Theme Style presets,
+    Budget Range.
+  - If Performer: Performer Type (Band, DJ, Soloist, MC, Magician), Performance
+    Duration (hours), Musical Genre multi-select tags, Sound Equipment source.
+  - If Crew: Dynamic crew roster where users can add/remove roles, set headcounts,
+    call times (e.g., 08:00 AM), and shift durations.
+- STEP 3 (Technical & Deliverables):
+  - If Planner: Selection of required deliverables (Vendor Sourcing, 3D Spatial
+    Layout, Master Run-of-Show, Permits & Insurance, AV Oversight, VIP Concierge).
+  - If Performer: Stage size specifications, Audio/Lighting Tech Rider needs,
+    special acoustic requests.
+  - If Crew: Safety certifications (Rigging, Dante Audio, OSHA-10, High Voltage),
+    Equipment handling proficiency, Dress code, Hourly/Flat pay rate, Budget.
+- STEP 4 (Review & Submit):
+  Displays an organized summary of every entered parameter with category color
+  coding. Each section has an "Edit" button that immediately navigates back to
+  that step. Clicking "Publish Requirement" sends the payload to the server.
+- POST-SUBMISSION:
+  The view swaps to `SuccessView`, displaying a glowing confirmation checkmark,
+  the generated reference code (e.g. `CRE-20261026-F9K2L`), and options to either
+  start a new requirement or open the `RequirementsDrawer` to view all saved
+  records in MongoDB.
+
+================================================================================
+5. KEY FRONTEND IMPLEMENTATION
+================================================================================
+Framework: Next.js 14 / React (App Router)
+Styling: Vanilla CSS with custom tokens in `globals.css` (No Tailwind)
+
+Key Components:
+1. `app/page.js`:
+   - Acts as the central state controller.
+   - Holds `formData` initialized with clean defaults.
+   - Houses `validateStep(currentStep)` which checks required fields, date
+     chronology, and positive numbers before permitting step advancement.
+   - Coordinates rendering of Step 1, 2, 3, 4, `SuccessView`, and
+     `RequirementsDrawer`.
+
+2. `components/StepIndicator.js`:
+   - Renders the interactive progress bar showing 4 numbered steps with labels.
+   - Completed steps show checkmarks and allow one-click jumping.
+
+3. `components/Step1Basics.js`:
+   - Form inputs with real-time error states.
+   - Handles single vs. range date toggling (clearing `endDate` if single-day).
+   - Renders 3 selectable category cards with active gradient borders.
+
+4. `components/Step2CategoryFields.js` & `components/Step3CategoryFields.js`:
+   - Conditional rendering based on `formData.category`.
+   - Custom tag selectors for genres, themes, and certifications.
+   - Dynamic array manipulation for crew roles (adding, deleting, and updating
+     individual role cards).
+
+5. `components/Step4ReviewSubmit.js`:
+   - Aggregates all state into structured summary cards.
+   - Handles API network dispatch, submission loading spinner, and error banners.
+
+6. `components/SuccessView.js`:
+   - Confirmation badge, ticket-styled reference card, and action buttons.
+
+7. `components/RequirementsDrawer.js`:
+   - Slide-over backdrop panel.
+   - Connects to `GET /api/requirements` and `GET /api/requirements/stats`.
+   - Offers real-time category filtering tabs and formatted cards.
+
+================================================================================
+6. KEY BACKEND IMPLEMENTATION
+================================================================================
+Runtime: Node.js (ES Modules)
+Web Framework: Express.js
+Database Driver: Mongoose (ODM)
+
+Key Modules:
+1. `server.js`:
+   - Boots the server on port 5001 (or `process.env.PORT`).
+   - Configures CORS allowing requests from `http://localhost:3000`.
+   - Mounts health-check endpoint `GET /api/health`.
+   - Mounts router on `/api/requirements`.
+   - Global 404 handler and central 500 error-handling middleware.
+
+2. `config/db.js`:
+   - Manages connection lifecycle with MongoDB via `mongoose.connect()`.
+   - Connects to `mongodb://127.0.0.1:27017/event_requirements_db` by default.
+
+3. `models/Requirement.js`:
+   - Declares embedded subschemas:
+     * `plannerDetailsSchema` (scope, estimatedGuests, themeStyle, budgetRange, deliverables)
+     * `performerDetailsSchema` (performerType, performanceDurationHours, genres, soundEquipment, stageDetails, techRiderRequirements, budgetRange)
+     * `crewRoleItemSchema` (roleName, count, callTime, shiftHours)
+     * `crewDetailsSchema` (roles array with min length 1, requiredCertifications, equipmentHandling, dressCode, payRateType, budgetPerCrew)
+   - Parent `requirementSchema` defines common event fields, category enum, and timestamps.
+   - Pre-save hook generates unique `referenceId` using category prefix + date + random alphanumeric salt.
+
+4. `controllers/requirementController.js`:
+   - `createRequirement`: Validates required fields, strips out inactive category
+     payloads, instantiates `Requirement`, and saves to DB.
+   - `getRequirements`: Supports `?category=planner|performer|crew`, `?limit=N`,
+     and `?sort=asc|desc`.
+   - `getRequirementById`: Checks whether the `:id` parameter is a MongoDB ObjectId
+     or a `referenceId` string and queries accordingly.
+   - `getRequirementStats`: Runs concurrent `countDocuments` queries to return
+     total and category-specific requirement tallies.
+
+5. `routes/requirementRoutes.js`:
+   - Clean route declarations mapping HTTP methods to controller functions.
+
+================================================================================
+7. API SPECIFICATIONS
+================================================================================
+
+1. CREATE REQUIREMENT
+   Endpoint: POST /api/requirements
+   Request Headers: Content-Type: application/json
+   Sample Request Body:
+   {
+     "eventName": "Apex Tech Global Summit 2026",
+     "eventType": "Corporate Gala & Conference",
+     "dateMode": "single",
+     "startDate": "2026-11-10T09:00:00.000Z",
+     "location": "San Francisco, CA",
+     "venue": "Moscone West Hall A",
+     "category": "performer",
+     "performerDetails": {
+       "performerType": "Live Band & Ensemble",
+       "performanceDurationHours": 3,
+       "genres": ["Jazz & Soul", "Pop"],
+       "soundEquipment": "venue_provided",
+       "stageDetails": "24x16 ft stage with drum riser",
+       "techRiderRequirements": "4 vocal mics, 2 monitor wedges, DI boxes",
+       "budgetRange": "$3,000 - $6,000",
+       "specialRequests": "Green room access 2 hours before soundcheck"
+     }
+   }
+
+   Response (201 Created):
+   {
+     "success": true,
+     "message": "Requirement successfully posted and categorized",
+     "data": {
+       "_id": "671d4a8efb7a2d04918e192a",
+       "referenceId": "PER-20261026-K9P2X",
+       "eventName": "Apex Tech Global Summit 2026",
+       "eventType": "Corporate Gala & Conference",
+       "dateMode": "single",
+       "startDate": "2026-11-10T09:00:00.000Z",
+       "location": "San Francisco, CA",
+       "venue": "Moscone West Hall A",
+       "category": "performer",
+       "performerDetails": { ... },
+       "status": "submitted",
+       "createdAt": "2026-10-26T15:10:06.120Z",
+       "updatedAt": "2026-10-26T15:10:06.120Z"
+     }
+   }
+
+2. GET ALL REQUIREMENTS
+   Endpoint: GET /api/requirements?category=crew&limit=10&sort=desc
+   Response (200 OK):
+   {
+     "success": true,
+     "total": 14,
+     "count": 10,
+     "data": [ ...array of requirement documents... ]
+   }
+
+3. GET REQUIREMENT BY ID OR REFERENCE
+   Endpoint: GET /api/requirements/PER-20261026-K9P2X
+   Response (200 OK):
+   {
+     "success": true,
+     "data": { ...requirement document... }
+   }
+
+4. GET REQUIREMENT STATISTICS
+   Endpoint: GET /api/requirements/stats
+   Response (200 OK):
+   {
+     "success": true,
+     "data": {
+       "total": 28,
+       "planner": 10,
+       "performer": 11,
+       "crew": 7
+     }
+   }
+
+================================================================================
+8. MONGODB SCHEMA DESIGN & DATA FLOW
+================================================================================
+Data Flow Architecture:
+
+  [Client Form State]
+          │
+          ▼  (HTTP POST JSON)
+  [Express Route /api/requirements]
+          │
+          ▼
+  [requirementController.createRequirement]
+     ├── 1. Validates base fields (eventName, eventType, startDate, location, category)
+     ├── 2. Isolates relevant category payload (discards non-selected categories)
+     └── 3. Validates nested constraints (e.g., crew roles must not be empty)
+          │
+          ▼
+  [Mongoose Model 'Requirement']
+     ├── Schema Type Casting & Range Validations
+     └── Pre-save Hook: Generates prefix `${CAT}-${YYYYMMDD}-${RANDOM}`
+          │
+          ▼
+  [MongoDB Database: 'event_requirements_db']
+     └── Collection: 'requirements'
+          │
+          ▼  (Stored BSON Document)
+  [Response Sent Back with 201 Created & referenceId]
+
+================================================================================
+9. TESTING STRATEGY & EDGE CASES HANDLED
+================================================================================
+The implementation handles several subtle domain edge cases:
+
+1. Switching Categories in Mid-Draft:
+   - Scenario: User fills in Crew details in Step 2, then goes back to Step 1
+     and changes category to Planner.
+   - Handled: The controller discards `crewDetails` and strictly persists only
+     `plannerDetails`. This prevents orphaned or inconsistent database records.
+
+2. Date Mode Edge Cases:
+   - Scenario: User selects "Date Range" and picks start/end dates, then changes
+     mode back to "Single Date".
+   - Handled: Frontend automatically resets `endDate` to empty string. The
+     backend defaults `dateMode` to `'single'` and stores `endDate` as undefined.
+
+3. Crew Headcount and Role Validation:
+   - Scenario: User removes all crew roles or sets headcount to 0.
+   - Handled: Frontend validates `roles.length > 0` before allowing step
+     advancement. Mongoose schema validator enforces an array length $\ge 1$ and
+     `min: 1` count per role.
+
+4. Empty Technical Textareas:
+   - Scenario: User leaves tech rider or special requests blank.
+   - Handled: Defined with default empty strings (`''`) rather than null or
+     undefined, preventing rendering crashes on the frontend review page.
+
+5. Cross-Origin Resource Sharing (CORS):
+   - Handled: Configured in `server.js` to allow origins on ports 3000, 3001,
+     and localhost loopback variants.
+
+================================================================================
+10. LIMITATIONS & PLANNED IMPROVEMENTS
+================================================================================
+While fully functional and robust for requirement authoring, potential future
+enhancements include:
+
+1. Authentication & Role-Based Access Control (RBAC):
+   - Current State: Public submission and live board viewing.
+   - Improvement: Integrate NextAuth.js / JWT auth to separate Organizer accounts
+     (who create requirements) from Talent/Crew accounts (who bid or apply).
+
+2. Binary File & Tech Rider Uploads:
+   - Current State: Technical riders and stage plots are input as text.
+   - Improvement: Integrate AWS S3 or Cloudinary for uploading PDF stage plots,
+     channel lists, and lighting patch sheets.
+
+3. Automated Notification & Talent Matching Engine:
+   - Improvement: Event-driven matching system that alerts registered sound
+     engineers or performers when a requirement matching their location and tags
+     is published.
+
+4. Geospatial Location Queries:
+   - Current State: Stored as text strings (City, State / Venue).
+   - Improvement: Store GeoJSON coordinates (`Point`) with MongoDB 2dsphere
+     indexes to allow radius search (e.g. "find requirements within 25 miles").
+
+================================================================================
+11. FILE-BY-FILE BREAKDOWN: PURPOSE & NEED OF EVERY FILE
+================================================================================
+
+BACKEND FILES:
+--------------
+1. `backend/package.json`
+   - Purpose: Defines Node.js project dependencies (express, mongoose, cors,
+     dotenv) and execution scripts (`npm run dev`, `npm start`). Configures
+     `"type": "module"` for native ES module imports.
+
+2. `backend/.env`
+   - Purpose: Stores sensitive and environment-specific configuration variables
+     such as `PORT=5001` and `MONGODB_URI`. Keeps database connection strings
+     isolated from source code.
+
+3. `backend/src/server.js`
+   - Purpose: The entry point for the backend application. Initializes the
+     Express server, registers CORS policies, parses JSON bodies, connects to
+     MongoDB via `connectDB()`, mounts route handlers, and sets up global 404
+     and 500 error middlewares.
+
+4. `backend/src/config/db.js`
+   - Purpose: Isolates database connection logic. Exports `connectDB()` which
+     uses Mongoose to connect to the MongoDB instance and logs connection
+     success or terminates execution on failure.
+
+5. `backend/src/models/Requirement.js`
+   - Purpose: The core domain model. Defines Mongoose schemas for event basic
+     information and embedded sub-schemas (`plannerDetails`, `performerDetails`,
+     `crewDetails`). Contains validation rules, enums, and the `pre('save')`
+     hook that constructs the human-readable `referenceId`.
+
+6. `backend/src/controllers/requirementController.js`
+   - Purpose: Contains all backend business logic. Receives HTTP requests,
+     performs input sanitization and verification, queries the Mongoose model,
+     and formats structured JSON responses for creation, filtering, detail
+     retrieval, and aggregated statistics.
+
+7. `backend/src/routes/requirementRoutes.js`
+   - Purpose: Maps RESTful API endpoints (`POST /`, `GET /`, `GET /stats`,
+     `GET /:id`) to their respective functions in `requirementController.js`.
+     Keeps routing declarations clean and decoupled from business logic.
+
+FRONTEND FILES:
+---------------
+8. `frontend/package.json`
+   - Purpose: Declares frontend project dependencies (next, react, react-dom)
+     and development scripts (`next dev`, `next build`, `next start`).
+
+9. `frontend/next.config.mjs`
+   - Purpose: Configuration file for Next.js build and runtime behavior.
+
+10. `frontend/jsconfig.json`
+    - Purpose: Configures JavaScript language service options, including path
+      aliases (e.g., `@/*`) for clean import statements.
+
+11. `frontend/app/layout.js`
+    - Purpose: Next.js Root Layout component. Injects HTML head elements, SEO
+      meta tags, and loads Google Fonts (`Plus Jakarta Sans` for clean UI
+      typography and `JetBrains Mono` for code/ticket references).
+
+12. `frontend/app/globals.css`
+    - Purpose: Complete CSS design system. Defines color tokens, dark theme
+      backgrounds, glassmorphic card borders, responsive layout grids, custom
+      form input styles, stepper UI styling, badges, animations, and the
+      drawer component styles. Includes standard `background-clip` compatibility.
+
+13. `frontend/app/page.js`
+    - Purpose: The central Next.js client-side page (`'use client'`). Manages
+      the multi-step form state (`formData`, `step`, `maxStepReached`, `errors`),
+      handles step validation logic, controls form submission to the API, and
+      renders the active step component or success view.
+
+14. `frontend/components/Icons.js`
+    - Purpose: Centralized repository of lightweight, scalable SVG icons
+      (PlannerIcon, PerformerIcon, CrewIcon, CalendarIcon, MapPinIcon, VenueIcon,
+      CheckIcon, PlusIcon, TrashIcon, SparklesIcon, DatabaseIcon, CloseIcon,
+      Arrows). Avoids heavy third-party icon libraries.
+
+15. `frontend/components/StepIndicator.js`
+    - Purpose: Top navigation bar displaying the 4-step timeline. Visualizes
+      which steps are completed (with green checkmarks), which step is active,
+      and which steps are locked. Supports clicking on completed steps to jump
+      directly to them.
+
+16. `frontend/components/Step1Basics.js`
+    - Purpose: Renders Step 1 form fields: Event Name, Event Type dropdown,
+      Single/Range Date toggle and date pickers, City/Location input, Venue
+      input, and the 3 interactive category selection cards (Planner, Performer,
+      Crew).
+
+17. `frontend/components/Step2CategoryFields.js`
+    - Purpose: Renders Step 2 fields dynamically based on selected category:
+      planner coordination scope, guest capacity, theme presets, budget range;
+      performer type, duration, genre tags, sound equipment; or crew dynamic
+      role roster with add/remove row capability and shift call times.
+
+18. `frontend/components/Step3CategoryFields.js`
+    - Purpose: Renders Step 3 deep specifications: planner deliverable
+      checkboxes; performer stage dimensions and tech rider notes; or crew
+      safety certifications, equipment handling tags, dress code, and hourly
+      pay rate.
+
+19. `frontend/components/Step4ReviewSubmit.js`
+    - Purpose: Renders Step 4 comprehensive summary. Groups all entered data
+      into categorized review sections with "Edit" buttons that link back to
+      prior steps. Houses the final "Publish Requirement" submission button,
+      submission loading state, and error alerts.
+
+20. `frontend/components/SuccessView.js`
+    - Purpose: Displayed after successful database insertion. Shows animated
+      confirmation elements, category badge, event title, and the unique
+      tracking reference code (`referenceId`). Offers actions to post another
+      requirement or open the live requirements board.
+
+21. `frontend/components/RequirementsDrawer.js`
+    - Purpose: Slide-out panel that queries `GET /api/requirements` in real time.
+      Displays live database records, filter tabs for categories (All, Planner,
+      Performer, Crew), total database count badges, and individual record cards.
+
+================================================================================
+END OF SPECIFICATION DOCUMENT
+================================================================================
